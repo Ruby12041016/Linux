@@ -1,10 +1,11 @@
-#include <fcntl.h>
-#include <stdio.h>
-#include <string.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <fstream>
+#include <iostream>
+#include <string>
 
+using namespace std;
 
 /*
     fork() 系统调用
@@ -12,18 +13,19 @@
     - 返回两次：父进程返回子进程PID，子进程返回0
     - 错误时返回-1
  */
-void fork_basic() {
+void _fork() {
     pid_t pid = fork();
     if (pid < 0) {
-        perror("fork失败");
+        cerr << "fork失败" << endl;
     } else if (pid == 0) {
         // 子进程执行
-        printf("子进程: PID=%d, PPID=%d\n", getpid(), getppid());
+        cout << "子进程: PID=" << getpid() << ", PPID=" << getppid() << endl;
         _exit(0);  // 子进程退出
     } else {
         // 父进程执行
-        printf("父进程: PID=%d, 创建的子进程PID=%d\n", getpid(), pid);
-        wait(NULL);  // 等待子进程
+        cout << "父进程: PID=" << getpid() << ", 创建的子进程PID=" << pid
+             << endl;
+        wait(nullptr);  // 等待子进程
     }
 }
 
@@ -36,19 +38,16 @@ void fork_basic() {
  */
 void copy_write() {
     int data = 100;
-    printf("父进程: data地址=%p, 值=%d\n", (void*)&data,
-           data);
+    cout << "父进程: data地址=" << &data << ", 值=" << data << endl;
     pid_t pid = fork();
     if (pid == 0) {
         // 子进程修改数据
         data = 200;
-        printf("子进程修改后: data地址=%p, 值=%d\n", (void*)&data,
-               data);
+        cout << "子进程修改后: data地址=" << &data << ", 值=" << data << endl;
         _exit(0);
     } else {
-        wait(NULL);
-        printf("父进程: data地址=%p, 值=%d \n",
-               (void*)&data, data);
+        wait(nullptr);
+        cout << "父进程: data地址=" << &data << ", 值=" << data << endl;
     }
 }
 
@@ -59,31 +58,26 @@ void copy_write() {
     - 需要正确管理，避免意外共享
  */
 void file() {
-    int fd = open("test.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) {
-        perror("打开文件失败");
+    ofstream outfile("test.txt", ios::out | ios::trunc);
+    if (!outfile) {
+        cerr << "打开文件失败" << endl;
         return;
     }
-    write(fd, "父进程写入\n", strlen("父进程写入\n"));
+    outfile << "父进程写入" << endl;
     pid_t pid = fork();
     if (pid == 0) {
-        write(fd, "子进程写入\n", strlen("子进程写入\n"));
-        close(fd);
+        outfile << "子进程写入" << endl;
+        outfile.close();
         _exit(0);
     } else {
-        wait(NULL);
-        write(fd, "父进程再次写入\n", strlen("父进程再次写入\n"));
-        close(fd);
-        printf("文件内容被父进程写入\n");
+        wait(nullptr);
+        outfile << "父进程再次写入" << endl;
+        outfile.close();
+        cout << "文件内容被父进程写入" << endl;
     }
 }
 
 /*
-   vfork() 系统调用
-    - 创建子进程但不复制内存
-    - 子进程共享父进程地址空间
-    - 保证子进程先执行，直到调用exec或exit
-    - 现代Linux中通常使用fork+COW替代
    竞争条件与同步
     - 父子进程执行顺序不确定
     - 需要同步机制避免竞态条件
@@ -93,20 +87,20 @@ void condition() {
     for (int i = 0; i < 5; i++) {
         pid_t pid = fork();
         if (pid == 0) {
-            printf("子进程 %d: 当前num=%d\n", i, num);
+            cout << "子进程 " << i << ": 当前num=" << num << endl;
             _exit(0);
         } else {
             num++;
         }
     }
     for (int i = 0; i < 5; i++) {
-        wait(NULL);
+        wait(nullptr);
     }
-    printf("最终num值: %d\n", num);
+    cout << "最终num值: " << num << endl;
 }
 
 int main() {
-    fork_basic();
+    _fork();
     copy_write();
     file();
     condition();
