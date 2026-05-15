@@ -19,19 +19,24 @@
 #include <string>
 #include <thread>
 #include <vector>
+
 #define ctrl_port 2100
 #define MAX_NUM 5
+#define BUF_SIZE 1024
 
-int addport(int p1, int p2) {
-    return p1 * 256 + p2;
+static void delete_(std::string& s) {
+    while (!s.empty() && (s.back() == '\r' || s.back() == '\n'))
+        s.pop_back();
 }
 
-std::vector<std::string> split_cmd (const std::string& s,char flag){
+std::vector<std::string> split_cmd(const std::string& s, char flag) {
     std::vector<std::string> results;
     std::stringstream ss(s);
     std::string result;
-    while(std::getline(ss,result,flag)){
-        results.push_back(result);
+    while (std::getline(ss, result, flag)) {
+        delete_(result);
+        if (!result.empty())
+            results.push_back(result);
     }
     return results;
 }
@@ -43,37 +48,25 @@ int filter(const struct dirent* entry) {
     return 1;
 }
 
-std::vector<std::string> do_list(const char* path){
-    int n = 0;
-    int m;
+std::vector<std::string> do_list(const char* path) {
     struct dirent** namelist;
-    char pathname[PATH_MAX];
-    struct stat* sb = (struct stat*)malloc(sizeof(struct stat));
     std::vector<std::string> results;
-    if ((n = scandir(path, &namelist, filter, NULL)) == -1) {
+    int n = scandir(path, &namelist, filter, NULL);
+    if (n == -1) {
         std::cout << " Scan error!\n";
-        free(sb);
         return results;
     }
     for (int i = 0; i < n; i++) {
-        snprintf(pathname, PATH_MAX, "%s/%s", path, namelist[i]->d_name);
-        if ((m = stat(pathname, sb)) == -1) {
-            perror("Failed to obtain information!\n");
-            continue;
-        }
-        char name[1024];
-        sprintf(name,"%s", namelist[i]->d_name);
-        std::string result(name);
-        results.push_back(result);
+        results.push_back(namelist[i]->d_name);
         free(namelist[i]);
     }
     free(namelist);
-    free(sb);
     return results;
 }
 
 void handle_client(int connfd) {
-    char buf[1024];
+    char buf[BUF_SIZE];
+    memset(buf, 0, sizeof(buf));
     int datafd = -1;
 
     std::string hello = "220 Welcome to Simple FTP Server!\r\n";
@@ -86,22 +79,26 @@ void handle_client(int connfd) {
             std::cout << "Client disconnect\n";
             break;
         }
-        std::string cmd(buf);
-        std::cout << "Client:" << cmd<<std::endl;
+        std::string cmd(buf, n);
+        std::cout << "Client:" << cmd;  
         std::vector<std::string> commonds = split_cmd(cmd, ' ');
 
-        if (cmd.substr(0, 4) == "USER") {
-            std::string answer = "230 Login OK\r\n";
-            send(connfd, answer.c_str(), answer.size(), 0);
+        if (commonds.empty())
+            continue;
 
-        } else if (cmd.substr(0, 4) == "QUIT") {
+        if (commonds[0] == "USER") {
+            std::string answer = "331 User name okay, need password\r\n";
+            send(connfd, answer.c_str(), answer.size(), 0);
+        } else if (commonds[0] == "PASS") {
+            std::string resp = "230 User logged in\r\n";
+            send(connfd, resp.c_str(), resp.size(), 0);
+        } else if (commonds[0] == "QUIT") {
             std::string answer = "221 Goodbye\r\n";
             send(connfd, answer.c_str(), answer.size(), 0);
             close(datafd);
             datafd = -1;
             break;
-        } else if(cmd.substr(0,4)=="PASV"){
-            
+        } else if (commonds[0] == "PASV") {
             int datalfd = socket(AF_INET, SOCK_STREAM, 0);
             struct sockaddr_in data_addr{};
             data_addr.sin_family = AF_INET;
@@ -116,9 +113,7 @@ void handle_client(int connfd) {
             unsigned short port = ntohs(data_addr.sin_port);
             int p1 = port / 256;
             int p2 = port % 256;
-            
-            // unsigned int ip[INET_ADDRSTRLEN];
-            // unsigned int ip_addr = ntohl(data_addr.sin_addr.s_addr);
+
             struct sockaddr_in local_addr;
             socklen_t local_len = sizeof(local_addr);
             getsockname(connfd, (struct sockaddr*)&local_addr, &local_len);
@@ -127,21 +122,20 @@ void handle_client(int connfd) {
             int ip1 = (ip >> 16) & 0xFF;
             int ip2 = (ip >> 8) & 0xFF;
             int ip3 = ip & 0xFF;
-            char massg[1024];
-            sprintf(massg, "227 entering passive mode (%d,%d,%d,%d,%d,%d)", ip0, ip1,
-                    ip2, ip3, p1, p2);
-            std::string mass(massg);    
+
+            char massg[BUF_SIZE];
+            sprintf(massg, "227 entering passive mode (%d,%d,%d,%d,%d,%d)", ip0,
+                    ip1, ip2, ip3, p1, p2);
+            std::string mass(massg);
             mass += "\r\n";
             send(connfd, mass.c_str(), mass.size(), 0);
 
             datafd = accept(datalfd, NULL, NULL);
             close(datalfd);
-        } else if (cmd.substr(0, 4) == "LIST") {
+        } else if (commonds[0] == "LIST") {
             if (datafd < 0) {
                 std::string answer = "425 No data connection\r\n";
                 send(connfd, answer.c_str(), answer.size(), 0);
-                close(datafd);
-                datafd = -1;
                 continue;
             }
             std::string answer = "150 List directory!\r\n";
@@ -149,17 +143,18 @@ void handle_client(int connfd) {
             char path[PATH_MAX];
             getcwd(path, sizeof(path));
             std::vector<std::string> document = do_list(path);
-            for (int i=0; i < document.size();i++){
-                std::string mag = document[i] + "\r\n";
-                send(datafd, mag.c_str(), mag.size(), 0);
+            std::string mag;
+            for (int i = 0; i < document.size(); i++) {
+                mag += document[i] + "\r\n";  
             }
+            send(datafd, mag.c_str(), mag.size(), 0);
 
             answer = "226 List compare!\r\n";
             send(connfd, answer.c_str(), answer.size(), 0);
             close(datafd);
             datafd = -1;
 
-        } else if (cmd.substr(0, 4) == "RETR" && commonds.size() >= 2) {
+        } else if (commonds[0] == "RETR" && commonds.size() >= 2) {
             if (datafd < 0) {
                 std::string answer = "425 No data connection\r\n";
                 send(connfd, answer.c_str(), answer.size(), 0);
@@ -169,15 +164,12 @@ void handle_client(int connfd) {
             std::string answer = "150 Retr directory!\r\n";
             send(connfd, answer.c_str(), answer.size(), 0);
             std::string filename = commonds[1];
-            while (!filename.empty() &&
-                   (filename.back() == '\r' || filename.back() == '\n'))
-                filename.pop_back();
 
             char path[PATH_MAX];
             getcwd(path, sizeof(path));
             std::string fullpath = std::string(path) + "/" + filename;
 
-            char file[1024];
+            char file[BUF_SIZE];
             std::ifstream fp(fullpath, std::ios::binary);
             if (!fp) {
                 std::string error = "550 File not found\r\n";
@@ -185,7 +177,8 @@ void handle_client(int connfd) {
                 continue;
             }
             int len;
-            while ((len = fp.readsome(file, sizeof(file))) > 0) {
+
+            while ((fp.read(file, BUF_SIZE), (len = fp.gcount()) > 0)) {
                 send(datafd, file, len, 0);
             }
             fp.close();
@@ -193,7 +186,7 @@ void handle_client(int connfd) {
             answer = "226 Retr compare!\r\n";
             send(connfd, answer.c_str(), answer.size(), 0);
             datafd = -1;
-        } else if (cmd.substr(0, 4) == "STOR" && commonds.size() >= 2) {
+        } else if (commonds[0] == "STOR" && commonds.size() >= 2) {
             if (datafd < 0) {
                 std::string answer = "425 No data connection\r\n";
                 send(connfd, answer.c_str(), answer.size(), 0);
@@ -202,15 +195,12 @@ void handle_client(int connfd) {
             std::string answer = "150 STOR directory!\r\n";
             send(connfd, answer.c_str(), answer.size(), 0);
             std::string filename = commonds[1];
-            while (!filename.empty() &&
-                   (filename.back() == '\r' || filename.back() == '\n'))
-                filename.pop_back();
 
             char path[PATH_MAX];
             getcwd(path, sizeof(path));
             std::string fullpath = std::string(path) + "/" + filename;
 
-            char file[1024];
+            char file[BUF_SIZE];
             std::ofstream fp(fullpath, std::ios::binary);
             if (!fp) {
                 std::string error = "550 Cannot create file\r\n";
@@ -241,7 +231,7 @@ void handle_client(int connfd) {
 int main() {
     int listenfd, connfd;
     listenfd = socket(AF_INET, SOCK_STREAM, 0);
-    
+
     struct sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(ctrl_port);
@@ -250,13 +240,14 @@ int main() {
     bind(listenfd, (sockaddr*)&addr, sizeof(addr));
     listen(listenfd, MAX_NUM);
 
-    std::cout << "FTP server listening on port 2100\n";
+    std::cout << "FTP server listening on port " << ctrl_port << std::endl;
 
     while (1) {
         sockaddr_in cliAddr;
         socklen_t cliLen = sizeof(cliAddr);
         connfd = accept(listenfd, (sockaddr*)&cliAddr, &cliLen);
-        if(connfd<0)continue;
+        if (connfd < 0)
+            continue;
         std::cout << "New Client Connect: " << inet_ntoa(cliAddr.sin_addr)
                   << std::endl;
 
