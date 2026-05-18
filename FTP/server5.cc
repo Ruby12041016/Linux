@@ -1,10 +1,13 @@
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <dirent.h>  //包含struct dirent结构体类型和alphasort函数
 #include <errno.h>
+//#include <fcntl.h>
 #include <grp.h>  //包含struct group,getgrgid
 #include <limits.h>
 #include <netinet/in.h>
 #include <pwd.h>  //包含struct paswd,getpwgid
+#include <sys/sendfile.h>
 #include <sys/socket.h>
 #include <sys/stat.h>   //struct stat
 #include <sys/types.h>  //struct stat,getpwgid
@@ -14,6 +17,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -66,10 +70,32 @@ std::vector<std::string> do_list(const char* path) {
     return results;
 }
 
+bool check_us(const std::string& name, const std::string& pass){
+    static std::map<std::string, std::string> users;
+    static bool logined = false;
+    if(!logined){
+        std::ifstream file("account.txt");
+        std::string massage;
+        while(std::getline(file,massage)){
+            auto wei = massage.find(':');
+            if(wei!=std::string::npos){
+                users[massage.substr(0, wei)] = massage.substr(wei + 1);
+            }
+        }
+        logined = true;
+        if(massage.empty()){
+            users["ruby"] = "1024";
+        }
+    }
+    auto it = users.find(name);
+    return (it != users.end() && it->second == pass);
+}
+
 void handle_client(int connfd) {
     char buf[BUF_SIZE];
     memset(buf, 0, sizeof(buf));
     int datafd = -1;
+    std::string now_user;
 
     std::string hello = "220 Welcome to Simple FTP Server!\r\n";
     send(connfd, hello.c_str(), hello.size(), 0);
@@ -89,11 +115,19 @@ void handle_client(int connfd) {
             continue;
 
         if (commonds[0] == "USER") {
+            now_user = commonds.size() > 1 ? commonds[1] : "";
             std::string answer = "331 User name okay, need password\r\n";
             send(connfd, answer.c_str(), answer.size(), 0);
         } else if (commonds[0] == "PASS") {
-            std::string resp = "230 User logged in\r\n";
-            send(connfd, resp.c_str(), resp.size(), 0);
+            std::string pass = commonds.size() > 1 ? commonds[1] : "";
+            if (check_us(now_user, pass)) {
+                std::string answer = "230 User logged in\r\n";
+                send(connfd, answer.c_str(), answer.size(), 0);
+            } else {
+                std::string answer = "530 Login incorrect\r\n";
+                send(connfd, answer.c_str(), answer.size(), 0);
+                break;  
+            }
         } else if (commonds[0] == "QUIT") {
             std::string answer = "221 Goodbye\r\n";
             send(connfd, answer.c_str(), answer.size(), 0);
@@ -172,18 +206,24 @@ void handle_client(int connfd) {
             std::string fullpath = std::string(path) + "/" + filename;
 
             char file[BUF_SIZE];
-            std::ifstream fp(fullpath, std::ios::binary);
+            FILE* fp = fopen(fullpath.c_str(), "rb");
             if (!fp) {
                 std::string error = "550 File not found\r\n";
                 send(connfd, error.c_str(), error.size(), 0);
                 continue;
             }
-            int len;
+            int file_fp = fileno(fp);
 
-            while ((fp.read(file, BUF_SIZE), (len = fp.gcount()) > 0)) {
-                send(datafd, file, len, 0);
+            struct stat st;
+            fstat(file_fp, &st);
+            off_t offset = 0;
+            while (offset < st.st_size) {
+                ssize_t sent =
+                    sendfile(datafd, file_fp, &offset, st.st_size - offset);
+                if (sent <= 0)
+                    break;
             }
-            fp.close();
+            fclose(fp);
             close(datafd);
             answer = "226 Retr compare!\r\n";
             send(connfd, answer.c_str(), answer.size(), 0);
