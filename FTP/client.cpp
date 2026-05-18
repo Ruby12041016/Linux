@@ -275,7 +275,12 @@ int main() {
         std::cerr << "Connect failed!\n";
         return -1;
     }
-    if (!login("ruby", "1204")) {
+    std::string username, password;
+    std::cout << "Username: ";
+    std::getline(std::cin, username);
+    std::cout << "Password: ";
+    std::getline(std::cin, password);
+    if (!login(username, password)) {
         std::cerr << "Login failed!\n";
         close(ctrlfd);
         return -1;
