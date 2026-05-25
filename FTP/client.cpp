@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -64,6 +65,27 @@ std::string recv_ans(int fd) {
     return answer;
 }
 
+std::string file_name(std::string file){
+    if(!std::filesystem::exists(file)){
+        return file;
+    }
+    std::filesystem::path path(file);
+
+    std::string name = path.stem().string();
+    std::string hou = path.extension().string();
+
+    int index = 1;
+    while (true) {
+        std::string new_name = name + "(" + std::to_string(index) + ")" + hou;
+
+        if (!std::filesystem::exists(new_name)) {
+            return new_name;
+        }
+
+        index++;
+    }
+}
+
 std::pair<std::string, int> do_pasv(const std::string& answer) {
     int l1 = answer.find('(');
     int l2 = answer.find(')');
@@ -115,98 +137,109 @@ void do_ls() {
     if (n > 0)
         std::cout << "LIST:\n" << std::string(buf, n) << std::endl;
     close(datafd);
-    recv_ans(ctrlfd); 
+    recv_ans(ctrlfd);
     if (ctrlfd < 0)
         return;
-    recv_ans(ctrlfd); 
-}
-
-bool do_retr(const std::string& ser, const std::string& cli) {
-    int datafd = pasv_conn();
-    if (datafd < 0) {
-        std::cerr << "pasv_conn failed" << std::endl;
-        return false;
-    }
-    send_cmd("RETR " + ser, ctrlfd);
-    if (ctrlfd < 0) {
-        close(datafd);
-        return false;
-    }
-
-    std::string answer = recv_ans(ctrlfd);
-    if (ctrlfd < 0) {
-        close(datafd);
-        return false;
-    }
-    if (answer.find("550") != std::string::npos) {
-        close(datafd);
-        return false;
-    }
-
-    char path[PATH_MAX];
-    getcwd(path, sizeof(path));
-    std::string fullpath = std::string(path) + "/" + cli;
-
-    char file[BUF_SIZE];
-    std::ofstream fp(fullpath, std::ios::binary);
-    if (!fp) {
-        std::cerr << "Cannot create local file: " << fullpath << std::endl;
-        int dummy;
-        while ((dummy = recv(datafd, file, BUF_SIZE, 0)) > 0) {
-        }
-        close(datafd);
-        recv_ans(ctrlfd);  
-        return false;
-    }
-
-    int n;
-    while ((n = recv(datafd, file, BUF_SIZE, 0)) > 0) {
-        fp.write(file, n);
-    }
-    fp.close();
-    close(datafd);
-    recv_ans(ctrlfd);  
-    return true;
+    recv_ans(ctrlfd);
 }
 
 bool do_stor(const std::string& ser, const std::string& cli) {
     int datafd = pasv_conn();
+
     if (datafd < 0) {
-        std::cerr << "pasv_conn failed" << std::endl;
+        std::cerr << "pasv_conn failed\n";
         return false;
     }
+
     send_cmd("STOR " + ser, ctrlfd);
-    if (ctrlfd < 0) {
+
+    std::string ans = recv_ans(ctrlfd);
+
+    if (ans.find("550") != std::string::npos) {
         close(datafd);
         return false;
     }
 
-    recv_ans(ctrlfd);  
-    if (ctrlfd < 0) {
-        close(datafd);
-        return false;
-    }
+    std::ifstream fp(cli, std::ios::binary);
 
-    char path[PATH_MAX];
-    getcwd(path, sizeof(path));
-    std::string fullpath = std::string(path) + "/" + cli;
-
-    std::ifstream fp(fullpath, std::ios::binary);
     if (!fp) {
-        std::cerr << "Local file not found: " << fullpath << std::endl;
-        close(datafd);     
-        recv_ans(ctrlfd);  
+        std::cerr << "Local file not found\n";
+        close(datafd);
         return false;
     }
 
-    char file[BUF_SIZE];
+    char buf[BUF_SIZE];
+
     int n;
-    while (fp.read(file, BUF_SIZE), (n = fp.gcount()) > 0) {
-        send(datafd, file, n, 0);
+
+    while (fp.read(buf, BUF_SIZE), (n = fp.gcount()) > 0) {
+        int sent = 0;
+
+        while (sent < n) {
+            int m = send(datafd, buf + sent, n - sent, 0);
+
+            if (m <= 0) {
+                close(datafd);
+                return false;
+            }
+
+            sent += m;
+        }
     }
+
     fp.close();
+
+    shutdown(datafd, SHUT_WR);
+
     close(datafd);
-    recv_ans(ctrlfd);  
+
+    recv_ans(ctrlfd);
+
+    return true;
+}
+
+bool do_retr(const std::string& ser, const std::string& cli) {
+    int datafd = pasv_conn();
+
+    if (datafd < 0) {
+        std::cerr << "pasv_conn failed\n";
+        return false;
+    }
+
+    send_cmd("RETR " + ser, ctrlfd);
+
+    std::string ans = recv_ans(ctrlfd);
+
+    if (ans.find("550") != std::string::npos) {
+        close(datafd);
+        return false;
+    }
+
+    std::string real_name = file_name(cli);
+    std::ofstream fp(real_name, std::ios::binary);
+
+    if (!fp) {
+        std::cerr << "Cannot create file\n";
+        close(datafd);
+        return false;
+    }
+
+    std::cout << "Save as: " << real_name << std::endl;
+
+    char buf[BUF_SIZE];
+
+    int n;
+
+    while ((n = recv(datafd, buf, BUF_SIZE, 0)) > 0) {
+        fp.write(buf, n);
+    }
+
+    fp.close();
+
+    close(datafd);
+
+    recv_ans(ctrlfd);
+
     return true;
 }
 
@@ -220,13 +253,13 @@ void quit() {
 }
 
 bool login(const std::string& user, const std::string& pasw) {
-    recv_ans(ctrlfd);  
+    recv_ans(ctrlfd);
     if (ctrlfd < 0)
         return false;
     send_cmd("USER " + user, ctrlfd);
     if (ctrlfd < 0)
         return false;
-    recv_ans(ctrlfd);  
+    recv_ans(ctrlfd);
     if (ctrlfd < 0)
         return false;
     send_cmd("PASS " + pasw, ctrlfd);
@@ -251,21 +284,28 @@ void parse_cmd(const std::string& cmd) {
         return;
 
     std::vector<std::string> commonds = split_cmd(cmd, ' ');
+
     if (commonds.empty())
         return;
 
     if (commonds[0] == "ls") {
         do_ls();
+
     } else if (commonds[0] == "retr" && commonds.size() >= 3) {
         do_retr(commonds[1], commonds[2]);
+
     } else if (commonds[0] == "stor" && commonds.size() >= 3) {
-        do_stor(commonds[2],
-                commonds[1]);  
+        do_stor(commonds[2], commonds[1]);
+
     } else if (commonds[0] == "quit" || commonds[0] == "exit") {
         quit();
+
     } else {
-        std::cout << "Unknown command. Available: ls, retr <remote> <local>, "
-                     "stor <local> <remote>, quit\n";
+        std::cout << "Commands:\n"
+                  << "ls\n"
+                  << "retr <remote_path> <local>\n"
+                  << "stor <local> <remote_path>\n"
+                  << "quit\n";
     }
 }
 
@@ -285,8 +325,9 @@ int main() {
         close(ctrlfd);
         return -1;
     }
-    std::cout << "Login successful. Commands: ls, retr <remote> <local>, stor "
-                 "<local> <remote>, quit\n";
+    std::cout
+        << "Login successful. Commands: ls, retr <remote_path> <local>, stor "
+           "<local> <remote_path>, quit\n";
 
     std::string cmd;
     while (ctrlfd >= 0) {
