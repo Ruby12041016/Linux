@@ -290,11 +290,11 @@ void do_retr(int connfd, const std::vector<std::string>& commonds) {
     }
 
     std::string filename = commonds[1];
-    char path[PATH_MAX];
-    getcwd(path, sizeof(path));
-    std::string fullpath = std::string(path) + "/" + filename;
+    // char path[PATH_MAX];
+    // getcwd(path, sizeof(path));
+    // std::string fullpath = std::string(path) + "/" + filename;
 
-    FILE* fp = fopen(fullpath.c_str(), "rb");
+    FILE* fp = fopen(filename.c_str(), "rb");
     if (!fp) {
         std::lock_guard<std::mutex> lock(clients[connfd].mutex);
         clients[connfd].writebuf += "550 File not found\r\n";
